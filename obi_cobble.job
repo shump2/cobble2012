@@ -67,8 +67,8 @@ date
 #echo check for length quality, trim accordingly
 
 #echo trimming
-#obicut -e 260 cobb_S1_L001_R1_001.fastq > cobb12_trim260.R1.fastq
-#obicut -e 200 cobb_S1_L001_R2_001.fastq > cobb12_trim200.R2.fastq
+#obicut -e 250 cobb_S1_L001_R1_001.fastq > cobb12_trim250.R1.fastq
+#obicut -e 180 cobb_S1_L001_R2_001.fastq > cobb12_trim180.R2.fastq
 
 
 ####################    obitools    ####################
