@@ -1,0 +1,203 @@
+#!/bin/bash
+#SBATCH -J 3.cobble.obi
+#SBATCH -N 1
+#SBATCH --ntasks-per-node 28
+#SBATCH -o %N.%J.out # Output file (node.jobid.out)
+#SBATCH -e %N.%J.err # Error file (node.jobid.err)
+#SBATCH -p compute
+#SBATCH --exclusive
+
+
+####    Dependencies    ####
+##echo install cdbfasta
+##git clone https://github.com/gpertea/cdbfasta.git
+##cd cdbfasta/
+##make
+
+
+module load obitools/1.2.9 
+module load R/3.3.0
+module load crop/1.33/gcc-6.3.0
+vsearch=~/applications/vsearch-2.5.0/bin/vsearch
+fastqc=~/applications/FastQC/fastqc
+export PATH=$PATH:~/applications/cdbfasta/
+export PATH=$PATH:~/applications/seqtk/
+date
+
+
+####################    preprocessing raw data for obitools pipeline    ####################
+
+#echo sometimes raw data can already be demultiplexed but for the obitools pipeline you need samples concatenated into single R1 and R2 reads. This
+#echo is a preprocessing pipeline to get the data ready for analysis using Obitools. Process raw data, assuming data is in folder "reads_raw" 
+#echo in .gz format, e.g. cobble2012-MiSeq_S1_L001_R1_001.fastq.gz and cobble2012-MiSeq_S1_L001_R2_001.fastq.gz
+
+#echo 1. folder with demultiplexed reads, e.g. CASAVA from MiSeq, unzip and save gzipped reads to reads_gzipd
+#mkdir reads_raw_gzipd
+#for i in $(ls reads_raw/*.gz| cut -d "." -f 1); do gunzip -c reads_raw/${i##*/}.fastq.gz > reads_raw_zipd/${i##*/}.fastq; done
+ 
+#echo 2. trim primers from R1 and R2 reads, the value of the -u parameter is the primer length. If primer length is different then
+#echo run separately for R1 and R2
+#mkdir reads_raw_gzipd_trimmed
+#for i in $(ls reads_raw_gzipd/*.fastq | cut -d "." -f 1,2); do cutadapt -u 28 -o reads_raw_gzipd_trimmed/${i##*/}.trimmed.fastq reads_raw_gzipd/${i##*/}.fastq; done ; gzip reads_raw_gzipd_trimmed/*.fastq # note data have been gzipped for the next command
+
+#echo 3. stitch new adaptor and primer sequence with high base quality "I" to fastq file. You need 2 files, e.g. R1_list.txt and R2_list.txt, which
+#echo contain the "path_to_file/file_name.fastq,adaptor_sequence,primer_sequence". One line per sample. CREDIT: CHRISTOPH HAHN 
+#mkdir raw_reads_obi
+#echo R1
+#for line in $(cat list_R1.csv); do file=$(echo $line| cut -d "," -f 1); zcat <(echo "$line" | gzip) $file | perl -ne 'if ($.==1){chomp; @a=split(","); $bc=$a[1]; $primer=$a[2]; $qualdummy='I' x (length($bc)+length($primer));}else{$h=$_; $s=<>; $p=<>; $q=<>; print "$h$bc$primer$s$p$qualdummy$q"}'; done | gzip > raw_reads_obi/concat_R1.fastq.gz
+
+#echo R2
+#for line in $(cat list_R2.csv); do file=$(echo $line| cut -d "," -f 1); zcat <(echo "$line" | gzip) $file | perl -ne 'if ($.==1){chomp; @a=split(","); $bc=$a[1]; $primer=$a[2]; $qualdummy='I' x (length($bc)+length($primer));}else{$h=$_; $s=<>; $p=<>; $q=<>; print "$h$bc$primer$s$p$qualdummy$q"}'; done | gzip > raw_reads_obi/concat_R2.fastq.gz
+
+#echo preprocessing complete, data now ready to be run through obitools pipeline using concat_R1.fastq.gz and concat_R2.fastq.gz files
+
+
+####################    quality control obitools input data    ####################
+
+#echo QC of obitools input data
+#echo 1. gunzip data for QC
+
+#mkdir obitools
+#cd obitools
+#gunzip -c ../raw_reads_obi/*.gz > .
+
+#echo 2. fastqc all read R1 and R2
+#mkdir fastqc
+#$fastqc -o fastqc/ --extract -f fastq *.fastq
+#echo check for length quality, trim accordingly
+
+#echo trimming
+#obicut -e 250 cobb_S1_L001_R1_001.fastq > cobb12_trim250.R1.fastq
+#obicut -e 180 cobb_S1_L001_R2_001.fastq > cobb12_trim180.R2.fastq
+
+
+####################    obitools    ####################
+
+echo Paired-end alignment. Annotate the reads with quality 40 and split the output in two files
+illuminapairedend -r cobb12_trim180.R2.fastq cobb12_trim250.R1.fastq | obiannotate -S goodali:'"Good_cobbCOI" if score>40.00 else "Bad_cobbCOI"' | obisplit -t goodali
+
+#echo convert fastq to fasta for demultiplexing in parallel
+#$seqtk seq -a Good_cobbCOI.fastq > Good_cobbCOI.fasta
+
+###########
+
+#echo Demultiplexing with ngsfilter
+#echo here use the script "submit_parallel_ngsfilter.sh" to parallelize the ngsfilter command, you need to edit the paths to your Good_cobbleCOI.fastq
+#echo  generated fastq file. This script generates files and folders by splitting the Good_cobbleCOI.fastq file into 1000 sequences per file and 100
+#echo files per folder. It will generate  as many files/folders necessary. You can set the split files into hatever you like and it will run each file
+#echo as a separate batch jobs. Typically 1000 sequences per file run in about 2 minutes 40 seconds.
+
+#mkdir demulti
+#cd demulti
+
+#sh submit_parallel_ngsfilter.sh #usage ngsfilter -t ngsfilter_cobble2011.txt --fasta-output -u unidentified_cobbleCOI.fastq Good_cobbleCOI.fastq --DEBUG > cobble2012.filtered.fasta
+
+#ngsfilter -t ngsfilter_cobblefull.txt --fasta-output -u unidentified_cobbCOI.fastq Good_cobbCOI.fasta --DEBUG > cobb12.filtered.fasta
+
+#echo Once ngsfilter has complete, e.g. 1-2 hours, concatenate all *.filtered.fasta from all folders
+#ngsfilter_results=~/Stanford_Jan2018/full_cobble/demulti
+#cat $(find $ngsfilter_results -name '*.filtered.fasta' | xargs)> demulti/cobble2012.filtered.fasta
+#cat $(find $ngsfilter_results -name '*unidentified*' | xargs)> demulti/unidentified.cobble2012.fasta
+###### check reads number ######
+
+#echo sort cobble2012.filtered.fasta
+#grep ">" demulti/cobble2012.filtered.fasta | sed 's/>//g' | sort -k1.6n > demulti/cobble2012.filtered_idlist.txt
+#cdbfasta demulti/cobble2012.filtered.fasta -o demulti/cobble2012.filtered.fasta.index
+#cat demulti/cobble2012.filtered_idlist.txt | cdbyank demulti/cobble2012.filtered.fasta.index > demulti/cobble2012.filtered_sorted.fasta
+#rm demulti/cobble2012.filtered.fasta.index
+
+
+###########
+
+#echo Filter the seqs with length between 300 and 320 bp and with no 'N'
+#obigrep -p 'seq_length>300' -p 'seq_length<320' -s '^[ACGT]+$' demulti/cobble2012.filtered_sorted.fasta > cobble2012.filtered_length.fasta
+
+#echo Calculate stats per sample
+#obistat -c sample -a seq_length cobble2012.filtered_length.fasta > sample_stats_cobble2012.length_filter.txt
+
+#echo Group the unique seqs
+#obiuniq -m sample cobble2012.filtered_length.fasta > cobble2012.unique.fasta
+
+#echo Exchange the identifier to a short index
+#obiannotate --seq-rank cobble2012.unique.fasta | obiannotate --set-identifier '"'COBB'_%09d" % seq_rank' > cobble2012.new.fasta
+#Rscript ~/peter/applications/R_scripts_metabarpark/owi_obifasta2vsearch -i cobble2012.new.fasta -o cobble2012.vsearch.fasta
+#sed 's/ ;/;/g' cobble2012.vsearch.fasta > cobble2012.vsearch.mod.fasta
+
+
+#############################
+##### CHIMERA DETECTION #####
+#############################
+
+#echo Run UCHIME de novo in VSEARCH
+#mkdir vsearch
+#$vsearch --uchime_denovo cobble2012.vsearch.mod.fasta --sizeout --nonchimeras vsearch/cobble2012.nonchimeras.fasta --chimeras vsearch/cobble2012.chimeras.fasta --threads 28 --uchimeout vsearch/cobble2012.uchimeout2.txt &> vsearch/log.cobble2012_chimeras
+#sed 's/;/ ;/g' vsearch/cobble2012.nonchimeras.fasta |grep -e ">" | awk 'sub(/^>/, "")' | awk '{print $1}' > vsearch/cobble2012.nonchimeras.txt # text file used for owi_recount_sumaclust step
+
+
+#####################
+##### CLUSTERING ####
+#####################
+
+#echo swarm using vsearch nonchimeras file
+#mkdir swarm
+#~/peter/applications/swarm/src/swarm -d 13 -z -t 40 -o swarm/cobble2012_SWARM13_output -s swarm/cobble2012_SWARM13_stats -w swarm/cobble2012_SWARM13_seeds.fasta vsearch/cobble2012.nonchimeras.fasta
+
+
+
+################################
+##### TAXONOMIC ASSIGNMENT #####
+################################
+
+#mkdir ecotag
+#cd ecotag
+#echo here use the script "submit_parallel_ecotag.sh" to parallelize the ecotag command, you need to edit the paths to you sumaclust generated 
+#echo fasta file, e.g. cobble2012.sumaclust95.centers.fasta, and ecopcr database. This script generates files and folders by splitting the 
+#echo cobble2012.sumaclust95.centers.fasta file into 100 sequences per file and 100 files per folder. It will generate  as many files/folders. 
+#echo You can set the split files into hatever you like and it will run each file as a separate job. Typically 100 sequneces per file run in about ~10-15 minutes.
+
+#sh submit_parallel_ecotag.sh
+
+######################
+
+#echo Once the previous step has complete, e.g. overnight, concatenate all *.ecotag.fasta from all folders
+#ecotag_results=~/stanford/Cobble_final/ecotag_all/
+#cat $(find $ecotag_results -name '*.ecotag.fasta' | xargs)> ecotag_all/cobble2012.ecotag.fasta
+
+#echo To sort fasta file numerically
+#echo install cdbfasta
+#git clone https://github.com/gpertea/cdbfasta.git
+#cd cdbfasta/
+#make
+#echo sort ecotag.fasta  
+#grep ">" ecotag_all/cobble2012.ecotag.fasta | sed 's/>//g' | sort -k1.6n > ecotag_all/cobble2012.ecotag_idlist.txt
+#cdbfasta ecotag_all/cobble2012.ecotag.fasta -o ecotag_all/cobble2012.ecotag.fasta.index
+#cat ecotag_all/cobble2012.ecotag_idlist.txt | cdbyank ecotag_all/cobble2012.ecotag.fasta.index > ecotag_all/cobble2012.ecotag_sorted.fasta
+#rm ecotag_all/cobble2012.ecotag.fasta.index
+
+######################
+## R scripts for reformatting metabarcoding databases CREDIT: OWEN WANGENSTEEN Find R scripts here: https://github.com/metabarpark/R_scripts_metabarpark
+#echo Add taxa above order level
+#Rscript ~/peter/applications/R_scripts_metabarpark/owi_add_taxonomy ecotag_all/cobble2012.ecotag_sorted.fasta cobble2012.ecotag.fasta.annotated.csv
+
+#echo recount abundance by sample
+#obitab -o cobble2012.new.fasta > cobble2012.new.tab
+#Rscript ~/peter/applications/R_scripts_metabarpark/owi_recount_swarm swarm/cobble2012_SWARM13_output cobble2012.new.tab
+
+#echo combine ecotag and abundance files
+#Rscript ~/peter/applications/R_scripts_metabarpark/owi_combine -i cobble2012.ecotag.fasta.annotated.csv -a swarm/cobble2012_SWARM13_output.counts.csv -o cobble2012_all_SWARM_FINAL_MOTUs.csv
+
+#echo collapse MOTUs
+#Rscript ~/peter/applications/R_scripts_metabarpark/owi_collapse -s 14 -e 106 -i cobble2012_all_SWARM_FINAL_MOTUs.csv
+
+
+#################################################################################################################
+##### NOTE THAT YOU CAN USE DIFFERENT CLUSTERING STRATEGIES IN PLACE OF SUMACLUST e.g. CROP, SWARM, VSEARCH #####
+#################################################################################################################
+
+#echo example of CROP
+#CROPLinux -i cobble2012.new.fasta -o CROP/cobble2012.crop -b 312 -l 1.5 -u 2.5 -z 24000 &> log.16s.crop
+
+
+date
+
+module purge
